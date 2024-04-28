@@ -33,80 +33,52 @@ type Post struct {
 
 const emptyStringError = "Enter a non-empty value!"
 
-// getGroups() gets and prints either all groups or just groups a user is subscribed to
-func getGroups(username string, option int) error {
+// getGroups() gets and prints all groups
+func getGroups(username string) error {
 	errPrefix := "Error getting groups:"
 
-	baseUrl := "http://localhost:8080/"
-
-	if option == 1 { // get all groups endpoint
-		baseUrl += "groups"
-	} else { // get just user's groups endpoint
-		baseUrl += "mygroups"
-	}
+	baseUrl := "http://localhost:8080/groups"
 
 	req, _ := http.NewRequest("GET", baseUrl, nil)
-
-	if option == 4 { // pass the user's username as part of user's groups request
-		req.Header.Set("username", username)
-	}
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		formatErr := fmt.Errorf("%s Error sending HTTP request: %v", errPrefix, err)
-		return formatErr
+		return fmt.Errorf("%s Error sending HTTP request: %v", errPrefix, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		fmt.Println("Error:", resp.Status)
-		return fmt.Errorf("%s Error sending HTTP request: %v", errPrefix, err)
+		return fmt.Errorf("%s HTTP request error: %v", errPrefix, resp.StatusCode)
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		formatErr := fmt.Errorf("%s Error reading HTTP response: %v", errPrefix, err)
-		return formatErr
+		return fmt.Errorf("%s Error reading HTTP response: %v", errPrefix, err)
 	}
 
-	if option == 1 {
-		var groups []Group
-		if err := json.Unmarshal(body, &groups); err != nil {
-			formatErr := fmt.Errorf("%s Error unmarshalling groups JSON: %v", errPrefix, err)
-			return formatErr
-		}
-
-		fmt.Println("Groups:")
-		for _, group := range groups {
-			fmt.Printf("Group Name: %s\n", group.GroupName)
-			fmt.Printf("Creator: %s\n", group.Creator)
-			fmt.Println("Group Mates:")
-			for _, mate := range group.GroupMates {
-				fmt.Printf("- %s\n", mate)
-			}
-			fmt.Println("Posts:")
-			for _, post := range group.Posts {
-				fmt.Printf("- Author: %s, Group: %s, Body: %s\n", post.Author, post.Group, post.Body)
-			}
-			fmt.Println("--------------------------------------------------")
-		}
-		return nil
-	} else {
-		var groups []string
-		err = json.Unmarshal(body, &groups)
-		if err != nil {
-			fmt.Println("Error unmarshaling JSON:", err)
-			return err
-		}
-
-		fmt.Println("Groups:")
-		for _, group := range groups {
-			fmt.Println("-", group)
-		}
-		return nil
+	var groups []Group
+	if err := json.Unmarshal(body, &groups); err != nil {
+		return fmt.Errorf("%s Error unmarshalling groups JSON: %v", errPrefix, err)
 	}
 
+	fmt.Println("Groups:")
+	for _, group := range groups {
+		fmt.Printf("Group Name: %s\n", group.GroupName)
+		fmt.Printf("Creator: %s\n", group.Creator)
+		fmt.Println("Group Mates:")
+		for _, mate := range group.GroupMates {
+			fmt.Printf("- %s\n", mate)
+		}
+		fmt.Println("Posts:")
+		for _, post := range group.Posts {
+			fmt.Printf("- Author: %s, Group: %s, Body: %s\n", post.Author, post.Group, post.Body)
+		}
+		fmt.Println("--------------------------------------------------")
+	}
+
+	fmt.Println("Successfully retrieved all groups!")
+	return nil
 }
 
 // joinGroup() subscribes a user to a group, allowing them to receive all new posts
@@ -137,37 +109,6 @@ func joinGroup(username string) error {
 	}
 
 	fmt.Printf("Successfully joined new group %s! \n", groupName)
-	return nil
-}
-
-// createGroup() creates a group and automatically registers user to group
-func createGroup(username string) error {
-	errPrefix := "Error creating group:"
-
-	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Print("Enter a group name: ")
-	scanner.Scan()
-	groupName := scanner.Text()
-
-	if groupName == "" {
-		return fmt.Errorf("%s %s", errPrefix, emptyStringError)
-	}
-
-	payload := []byte(fmt.Sprintf("username=%s&groupname=%s", username, groupName))
-
-	url := "http://localhost:8080/creategroup"
-
-	resp, err := http.Post(url, "application/x-www-form-urlencoded", bytes.NewBuffer(payload))
-	if err != nil {
-		return fmt.Errorf("%s Error sending HTTP request: %v", errPrefix, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s Failed to register with %d code", errPrefix, resp.StatusCode)
-	}
-
-	fmt.Printf("Successfully created group %s for user %s!\n", groupName, username)
 	return nil
 }
 
@@ -210,7 +151,7 @@ func writeMyPost(username string) error {
 func doClientFunctionalities(username string) error {
 	errPrefix := "Error handling client functionality choice:"
 	scanner := bufio.NewScanner(os.Stdin)
-	fmt.Print("Choose a number from the following choices: \nSee all groups (1) \nJoin a group (2) \nCreate a group (3) \nSee my groups (4) \nWrite a post (5)\n")
+	fmt.Print("Choose a number from the following choices: \nSee all groups (1) \nJoin a group (2) \nWrite a post (3)\n")
 	scanner.Scan()
 	optionString := scanner.Text()
 
@@ -220,19 +161,17 @@ func doClientFunctionalities(username string) error {
 
 	option, err := strconv.Atoi(optionString)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s %s", errPrefix, err)
 	}
 
-	if option == 1 || option == 4 {
-		return getGroups(username, option)
+	if option == 1 {
+		return getGroups(username)
 	} else if option == 2 {
 		return joinGroup(username)
 	} else if option == 3 {
-		return createGroup(username)
-	} else if option == 5 {
 		return writeMyPost(username)
 	} else {
-		return fmt.Errorf("Chose invalid number %d", option)
+		return fmt.Errorf("%s Chose invalid number %d", errPrefix, option)
 	}
 }
 
@@ -244,7 +183,7 @@ func tellServer(username string) error {
 
 	resp, err := http.Post(url, "text/plain", payload)
 	if err != nil {
-		return err
+		return fmt.Errorf("Failed to send request: %s\n", err)
 	}
 	defer resp.Body.Close()
 
@@ -306,10 +245,8 @@ func dialAndAuthenticate(username string) (net.Conn, error) {
 		return nil, err
 	}
 
-	fmt.Println("Sent server username")
-
+	fmt.Println("Sent server username!")
 	return conn, nil
-
 }
 
 func receiveNewPosts(conn net.Conn) {
