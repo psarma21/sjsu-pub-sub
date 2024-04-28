@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -11,6 +12,24 @@ import (
 	"strconv"
 	"strings"
 )
+
+type User struct {
+	Username string   `json:"username"`
+	Groups   []string `json:"groups"`
+}
+
+type Group struct {
+	GroupName  string   `bson:"groupname"`
+	Creator    string   `bson:"creator"`
+	GroupMates []string `bson:"groupmates"`
+	Posts      []Post   `bson:"posts"`
+}
+
+type Post struct {
+	Author string `bson:"author"`
+	Group  string `bson:"group"`
+	Body   string `bson:"body"`
+}
 
 const emptyStringError = "Enter a non-empty value!"
 
@@ -40,14 +59,53 @@ func getGroups(username string, option int) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		fmt.Println("Error:", resp.Status)
+		return fmt.Errorf("%s Error sending HTTP request: %v", errPrefix, err)
+	}
+
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		formatErr := fmt.Errorf("%s Error reading HTTP response: %v", errPrefix, err)
 		return formatErr
 	}
 
-	fmt.Println("Response from server:", string(body))
-	return nil
+	if option == 1 {
+		var groups []Group
+		if err := json.Unmarshal(body, &groups); err != nil {
+			formatErr := fmt.Errorf("%s Error unmarshalling groups JSON: %v", errPrefix, err)
+			return formatErr
+		}
+
+		fmt.Println("Groups:")
+		for _, group := range groups {
+			fmt.Printf("Group Name: %s\n", group.GroupName)
+			fmt.Printf("Creator: %s\n", group.Creator)
+			fmt.Println("Group Mates:")
+			for _, mate := range group.GroupMates {
+				fmt.Printf("- %s\n", mate)
+			}
+			fmt.Println("Posts:")
+			for _, post := range group.Posts {
+				fmt.Printf("- Author: %s, Group: %s, Body: %s\n", post.Author, post.Group, post.Body)
+			}
+			fmt.Println("--------------------------------------------------")
+		}
+		return nil
+	} else {
+		var groups []string
+		err = json.Unmarshal(body, &groups)
+		if err != nil {
+			fmt.Println("Error unmarshaling JSON:", err)
+			return err
+		}
+
+		fmt.Println("Groups:")
+		for _, group := range groups {
+			fmt.Println("-", group)
+		}
+		return nil
+	}
 
 }
 
@@ -78,7 +136,7 @@ func joinGroup(username string) error {
 		return fmt.Errorf("%s Failed to register with %d code", errPrefix, resp.StatusCode)
 	}
 
-	fmt.Printf("Successfully joined new group %s \n", groupName)
+	fmt.Printf("Successfully joined new group %s! \n", groupName)
 	return nil
 }
 
@@ -109,7 +167,7 @@ func createGroup(username string) error {
 		return fmt.Errorf("%s Failed to register with %d code", errPrefix, resp.StatusCode)
 	}
 
-	fmt.Printf("Successfully created group %s for user %s\n", groupName, username)
+	fmt.Printf("Successfully created group %s for user %s!\n", groupName, username)
 	return nil
 }
 
@@ -191,10 +249,10 @@ func tellServer(username string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		fmt.Printf("Successfully registered new user %s \n\n", username)
+		fmt.Printf("Successfully registered new user %s! \n\n", username)
 		return nil
 	} else if resp.StatusCode == http.StatusConflict {
-		fmt.Printf("Successfully logged in user %s \n\n", username)
+		fmt.Printf("Successfully logged in existing user %s! \n\n", username)
 		return nil
 	} else {
 		return fmt.Errorf("Failed to register with %d code\n", resp.StatusCode)

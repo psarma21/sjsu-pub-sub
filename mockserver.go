@@ -1,13 +1,38 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"net/http"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func registerClientHandler(w http.ResponseWriter, r *http.Request) {
+type User struct {
+	Username string   `json:"username"`
+	Groups   []string `json:"groups"`
+}
+
+type Group struct {
+	GroupName  string   `bson:"groupname"`
+	Creator    string   `bson:"creator"`
+	GroupMates []string `bson:"groupmates"`
+	Posts      []Post   `bson:"posts"`
+}
+
+type Post struct {
+	Author string `bson:"author"`
+	Group  string `bson:"group"`
+	Body   string `bson:"body"`
+}
+
+func registerClientHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Error reading request body", http.StatusInternalServerError)
@@ -16,27 +41,80 @@ func registerClientHandler(w http.ResponseWriter, r *http.Request) {
 
 	username := string(body)
 
-	// TODO: Check if user exists. Otherwise new user, insert user info in Users table
+	db := dbClient.Database("Test")
+	usersCollection := db.Collection("Users")
 
-	if username == "pasarma" {
-		// TODO change to "if already exists"
-		fmt.Printf("User %s already exists, logging in...\n", username)
-		http.Error(w, "Error registering new user", http.StatusConflict)
+	count, err := usersCollection.CountDocuments(context.Background(), bson.M{"username": username}) // get all users with input username
+	if err != nil {
+		http.Error(w, "Error checking username", http.StatusInternalServerError)
 		return
 	}
 
-	fmt.Printf("Registered new user %s!\n", username) // debug statement for server
+	if count > 0 { // check if username exists
+		fmt.Printf("Username %s already exists, logging in...\n", username)
+		http.Error(w, "Username already exists", http.StatusConflict)
+		return
+	}
+
+	newUser := User{
+		Username: username,
+		Groups:   []string{},
+	}
+
+	_, err = usersCollection.InsertOne(context.Background(), newUser) // insert user if not already present
+	if err != nil {
+		http.Error(w, "Error inserting username", http.StatusInternalServerError)
+		return
+	}
+
+	fmt.Printf("Registered new user %s!\n", username)
 	w.WriteHeader(http.StatusOK)
 }
 
-func getAllGroupsHandler(w http.ResponseWriter, r *http.Request) {
-	// TODO: Make DB call to Groups table to get all groups in JSON form
-
+func getAllGroupsHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	fmt.Printf("Retrieving all groups...\n")
-	fmt.Fprintf(w, "Here are the new groups")
+
+	db := dbClient.Database("Test")
+	groupsCollection := db.Collection("Groups")
+
+	var groups []Group
+
+	ctx := context.TODO()
+
+	cursor, err := groupsCollection.Find(ctx, bson.M{}) // get all groups
+	if err != nil {
+		http.Error(w, "Error retrieving groups", http.StatusInternalServerError)
+		return
+	}
+	defer cursor.Close(ctx)
+
+	for cursor.Next(ctx) {
+		var group Group
+		if err := cursor.Decode(&group); err != nil {
+			http.Error(w, "Error decoding group document", http.StatusInternalServerError)
+			return
+		}
+		groups = append(groups, group)
+	}
+
+	if err := cursor.Err(); err != nil {
+		http.Error(w, "Error iterating through groups", http.StatusInternalServerError)
+		return
+	}
+
+	groupsJSON, err := json.Marshal(groups)
+	if err != nil {
+		http.Error(w, "Error marshalling groups to JSON", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(groupsJSON)
+	fmt.Printf("Retrieved all groups!\n")
 }
 
-func joinGroupHandler(w http.ResponseWriter, r *http.Request) {
+func joinGroupHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, "Failed to parse form data", http.StatusBadRequest)
@@ -45,14 +123,60 @@ func joinGroupHandler(w http.ResponseWriter, r *http.Request) {
 
 	username := r.Form.Get("username")
 	group := r.Form.Get("groupname")
-
-	// TODO: Make DB call to insert new group for user in Users table
 
 	fmt.Printf("Received request for username %s to join group %s...\n", username, group)
+
+	db := dbClient.Database("Test")
+	groupsCollection := db.Collection("Groups")
+
+	count, err := groupsCollection.CountDocuments(context.Background(), bson.M{"groupname": group}) // check if group exists
+	if err != nil {
+		http.Error(w, "Error validating group name", http.StatusInternalServerError)
+		return
+	}
+
+	if count == 0 { // check if group exists
+		http.Error(w, "Group name does not exist", http.StatusNotFound)
+		return
+	}
+
+	filter := bson.M{"groupname": group}
+
+	update := bson.M{
+		"$push": bson.M{
+			"groupmates": username, // append user to groupmates of group
+		},
+	}
+
+	_, err = groupsCollection.UpdateOne(context.Background(), filter, update)
+	if err != nil {
+		http.Error(w, "Error updating Groups table", http.StatusNotFound)
+		return
+	}
+
+	usersCollection := db.Collection("Users")
+
+	// can assume username has already been validated at login
+
+	filter = bson.M{"username": username}
+
+	update = bson.M{
+		"$push": bson.M{
+			"groups": group, // append groups to groups of user
+		},
+	}
+
+	_, err = usersCollection.UpdateOne(context.Background(), filter, update)
+	if err != nil {
+		http.Error(w, "Error updating Users table", http.StatusNotFound)
+		return
+	}
+
+	fmt.Printf("Username %s successfully joined group %s!\n", username, group)
 	w.WriteHeader(http.StatusOK)
 }
 
-func createGroupHandler(w http.ResponseWriter, r *http.Request) {
+func createGroupHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, "Failed to parse form data", http.StatusBadRequest)
@@ -62,14 +186,56 @@ func createGroupHandler(w http.ResponseWriter, r *http.Request) {
 	username := r.Form.Get("username")
 	group := r.Form.Get("groupname")
 
-	// TODO: Make DB call to create group in Users, Groups table
-	// TODO: Register user as part of group
-
 	fmt.Printf("Received request for username %s to create group %s...\n", username, group)
+
+	db := dbClient.Database("Test")
+	groupsCollection := db.Collection("Groups")
+
+	count, err := groupsCollection.CountDocuments(context.Background(), bson.M{"groupname": group}) // check if group exists
+	if err != nil {
+		http.Error(w, "Error validating group name", http.StatusInternalServerError)
+		return
+	}
+
+	if count != 0 { // check if group exists
+		http.Error(w, "Group name already exists", http.StatusConflict)
+		return
+	}
+
+	newGroup := Group{
+		GroupName:  group,
+		Creator:    username,
+		GroupMates: []string{username},
+		Posts:      []Post{},
+	}
+
+	_, err = groupsCollection.InsertOne(context.Background(), newGroup) // insert new group
+	if err != nil {
+		http.Error(w, "Error updating Groups table", http.StatusInternalServerError)
+		return
+	}
+
+	usersCollection := db.Collection("Users")
+
+	filter := bson.M{"username": username}
+
+	update := bson.M{
+		"$push": bson.M{
+			"groups": group, // append groups to groups of user
+		},
+	}
+
+	_, err = usersCollection.UpdateOne(context.Background(), filter, update)
+	if err != nil {
+		http.Error(w, "Error updating Users table", http.StatusNotFound)
+		return
+	}
+
+	fmt.Printf("Username %s successfully created and joined group %s!\n", username, group)
 	w.WriteHeader(http.StatusOK)
 }
 
-func getUserGroupsHandler(w http.ResponseWriter, r *http.Request) {
+func getUserGroupsHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	username := ""
 
 	// get username from header
@@ -82,12 +248,44 @@ func getUserGroupsHandler(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("Retrieving groups for user %s...\n", username)
 
-	// TODO: Make DB call to get all groups in JSON form from Users table
+	db := dbClient.Database("Test")
+	usersCollection := db.Collection("Users")
 
-	fmt.Fprintf(w, "Here are the new groups")
+	// can assume user has been validated
+
+	filter := bson.M{"username": username}
+
+	var userDocument bson.M
+	err := usersCollection.FindOne(context.Background(), filter).Decode(&userDocument)
+	if err != nil {
+		http.Error(w, "Error finding user", http.StatusInternalServerError)
+		return
+	}
+
+	groupsArray, ok := userDocument["groups"].(primitive.A)
+	if !ok {
+		http.Error(w, "Error accessing groups", http.StatusInternalServerError)
+		return
+	}
+
+	var groupsSlice []string
+	for _, group := range groupsArray {
+		groupsSlice = append(groupsSlice, group.(string))
+	}
+
+	groupsJSON, err := json.Marshal(groupsSlice)
+	if err != nil {
+		http.Error(w, "Error marshaling groups to JSON", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(groupsJSON)
+	fmt.Printf("Retrived groups for user %s!\n", username)
 }
 
-func writePostHandler(w http.ResponseWriter, r *http.Request) {
+func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	err := r.ParseForm()
 	if err != nil {
 		http.Error(w, "Failed to parse form data", http.StatusBadRequest)
@@ -98,35 +296,112 @@ func writePostHandler(w http.ResponseWriter, r *http.Request) {
 	group := r.Form.Get("groupname")
 	post := r.Form.Get("post")
 
-	// TODO: Make DB call to store post in Users, Posts table
-	// TODO: Gossip to all users in group
-
 	fmt.Printf("Received request for username %s to post \"%s\" in group %s...\n", username, post, group)
+
+	db := dbClient.Database("Test")
+	groupsCollection := db.Collection("Groups")
+
+	count, err := groupsCollection.CountDocuments(context.Background(), bson.M{"groupname": group}) // check if group exists
+	if err != nil {
+		http.Error(w, "Error validating group name", http.StatusInternalServerError)
+		return
+	}
+
+	if count == 0 { // check if group exists
+		http.Error(w, "Group name does not exist!", http.StatusInternalServerError)
+		return
+	}
+
+	fullpost := Post{
+		Author: username,
+		Group:  group,
+		Body:   post,
+	}
+
+	filter := bson.M{"groupname": group}
+
+	update := bson.M{
+		"$push": bson.M{
+			"posts": fullpost, // append post to posts of group
+		},
+	}
+
+	_, err = groupsCollection.UpdateOne(context.Background(), filter, update)
+	if err != nil {
+		http.Error(w, "Error updating Groups table", http.StatusNotFound)
+		return
+	}
+
+	// TODO: Gossip to all groupmates
+
+	fmt.Printf("Username %s successfully posted \"%s\" in group %s!\n", username, post, group)
 	w.WriteHeader(http.StatusOK)
 }
 
-func listenHTTP() {
-	http.HandleFunc("/register", registerClientHandler) // register a new user
-	http.HandleFunc("/groups", getAllGroupsHandler)     // get all groups
-	http.HandleFunc("/joingroup", joinGroupHandler)     // join a group
-	http.HandleFunc("/creategroup", createGroupHandler) // create a group
-	http.HandleFunc("/mygroups", getUserGroupsHandler)  // get all groups for a user
-	http.HandleFunc("/writepost", writePostHandler)     // write a post to a group
-	http.ListenAndServe(":8080", nil)
+func listenHTTP(dbClient *mongo.Client) {
+	mux := http.NewServeMux()
+
+	// Register handlers with the custom ServeMux
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) { // register a new user
+		registerClientHandler(w, r, dbClient)
+	})
+	mux.HandleFunc("/groups", func(w http.ResponseWriter, r *http.Request) { // get all groups
+		getAllGroupsHandler(w, r, dbClient)
+	})
+	mux.HandleFunc("/joingroup", func(w http.ResponseWriter, r *http.Request) { // join a group
+		joinGroupHandler(w, r, dbClient)
+	})
+	mux.HandleFunc("/creategroup", func(w http.ResponseWriter, r *http.Request) { // create a group
+		createGroupHandler(w, r, dbClient)
+	})
+	mux.HandleFunc("/mygroups", func(w http.ResponseWriter, r *http.Request) { // get all groups for a user
+		getUserGroupsHandler(w, r, dbClient)
+	})
+	mux.HandleFunc("/writepost", func(w http.ResponseWriter, r *http.Request) { // write a post to a group
+		writePostHandler(w, r, dbClient)
+	})
+
+	// Start the HTTP server with the custom ServeMux
+	http.ListenAndServe(":8080", mux)
 }
 
 func handleConnection(conn net.Conn) {
 	fmt.Println("Received client connection from:", conn.RemoteAddr())
 }
 
-func main() {
-	// TODO: initialize DB connection
+func initDB() (*mongo.Client, error) {
+	var client *mongo.Client
 
-	go listenHTTP()
+	clientOptions := options.Client().ApplyURI("mongodb://localhost:27017")
+
+	ctx := context.TODO()
+	var err error
+	client, err = mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return client, nil
+}
+
+func main() {
+	dbConn, err := initDB() // initialize MongoDB connection
+	if err != nil {
+		fmt.Printf("Error connecting to DB: %v\n", err)
+	}
+
+	fmt.Println("Initialized DB connection...")
+
+	go listenHTTP(dbConn) // listening for HTTP request
 
 	fmt.Println("HTTP server listening on port 8080...")
 
-	listener, err := net.Listen("tcp", ":8081")
+	listener, err := net.Listen("tcp", ":8081") // listening for TCP connections for future gossip
 	if err != nil {
 		fmt.Printf("Error listening: %v\n", err)
 		return
