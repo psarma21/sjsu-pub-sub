@@ -5,31 +5,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
+	"sjsu-pub-sub/types"
+	"sync"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-type User struct {
-	Username string   `json:"username"`
-	Groups   []string `json:"groups"`
+type ClientMap struct {
+	sync.RWMutex
+	Connections map[string]string
 }
 
-type Group struct {
-	GroupName  string   `bson:"groupname"`
-	Creator    string   `bson:"creator"`
-	GroupMates []string `bson:"groupmates"`
-	Posts      []Post   `bson:"posts"`
-}
-
-type Post struct {
-	Author string `bson:"author"`
-	Group  string `bson:"group"`
-	Body   string `bson:"body"`
-}
+// Global variable to store client connections
+var ActiveConns ClientMap
 
 func registerClientHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	body, err := ioutil.ReadAll(r.Body)
@@ -55,7 +49,7 @@ func registerClientHandler(w http.ResponseWriter, r *http.Request, dbClient *mon
 		return
 	}
 
-	newUser := User{
+	newUser := types.User{
 		Username: username,
 		Groups:   []string{},
 	}
@@ -76,7 +70,7 @@ func getAllGroupsHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo
 	db := dbClient.Database("Test")
 	groupsCollection := db.Collection("Groups")
 
-	var groups []Group
+	var groups []types.Group
 
 	ctx := context.TODO()
 
@@ -88,7 +82,7 @@ func getAllGroupsHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo
 	defer cursor.Close(ctx)
 
 	for cursor.Next(ctx) {
-		var group Group
+		var group types.Group
 		if err := cursor.Decode(&group); err != nil {
 			http.Error(w, "Error decoding group document", http.StatusInternalServerError)
 			return
@@ -175,6 +169,96 @@ func joinGroupHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Cl
 	w.WriteHeader(http.StatusOK)
 }
 
+// MulticastFromServer starts the gossip from the server. The server will multicast to the first two clients, those two clients
+// will gossip with all other clients.
+func MulticastFromServer(connList []string, post string, randomNumber int) error {
+	if len(connList) <= 2 { // at most two clients, synchronously send. no error needed
+		msg := types.GossipMessage{
+			Id:           randomNumber,
+			Body:         post,
+			ConnsToWrite: nil, // no other clients to write to
+		}
+
+		msgBytes, err := json.Marshal(msg)
+		if err != nil {
+			fmt.Println("Error marshaling message:", err)
+			return err
+		}
+
+		for i := 0; i < len(connList); i++ {
+			conn, err := net.Dial("tcp", connList[i])
+			if err != nil {
+				fmt.Println("Error dialing client", err)
+				return err
+			}
+
+			_, err = conn.Write(msgBytes)
+			if err != nil {
+				fmt.Println("Error sending message to a client:", err)
+			}
+		}
+
+		return nil
+	} else { // more than two clients, synchronously send to both but pass on all clients info
+		conn0 := connList[0]
+		conn1 := connList[1]
+
+		excludedSelfConnList := connList[1:]
+
+		msg := types.GossipMessage{
+			Id:           randomNumber,
+			Body:         post,
+			ConnsToWrite: excludedSelfConnList,
+		}
+
+		msgBytes, err := json.Marshal(msg)
+		if err != nil {
+			fmt.Println("Error marshaling message:", err)
+			return err
+		}
+
+		conn, err := net.Dial("tcp", conn0)
+		if err != nil {
+			fmt.Println("Error dialing client", err)
+			return err
+		}
+
+		_, err = conn.Write(msgBytes)
+		if err != nil {
+			fmt.Println("Error sending message to a client:", err)
+			return err
+		}
+
+		excludedSelfConnList2 := append(connList[:1], connList[2:]...)
+
+		msg = types.GossipMessage{
+			Id:           randomNumber,
+			Body:         post,
+			ConnsToWrite: excludedSelfConnList2,
+		}
+
+		msgBytes, err = json.Marshal(msg)
+		if err != nil {
+			fmt.Println("Error marshaling message:", err)
+			return err
+		}
+
+		conn, err = net.Dial("tcp", conn1)
+		if err != nil {
+			fmt.Println("Error dialing client", err)
+			return err
+		}
+
+		_, err = conn.Write(msgBytes)
+		if err != nil {
+			fmt.Println("Error sending message to a client:", err)
+			return err
+		}
+	}
+
+	return nil
+}
+
 func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	err := r.ParseForm()
 	if err != nil {
@@ -191,18 +275,16 @@ func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Cl
 	db := dbClient.Database("Test")
 	groupsCollection := db.Collection("Groups")
 
-	count, err := groupsCollection.CountDocuments(context.Background(), bson.M{"groupname": group}) // check if group exists
+	var groupDoc types.Group
+	err = groupsCollection.FindOne(context.Background(), bson.M{"groupname": group}).Decode(&groupDoc) // check if group exists
 	if err != nil {
 		http.Error(w, "Error validating group name", http.StatusInternalServerError)
 		return
 	}
 
-	if count == 0 { // check if group exists
-		http.Error(w, "Group name does not exist!", http.StatusInternalServerError)
-		return
-	}
+	groupMates := groupDoc.GroupMates
 
-	fullpost := Post{
+	fullpost := types.Post{
 		Author: username,
 		Group:  group,
 		Body:   post,
@@ -222,10 +304,39 @@ func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Cl
 		return
 	}
 
-	// TODO: Gossip to all groupmates
-
 	fmt.Printf("Username %s successfully posted \"%s\" in group %s!\n", username, post, group)
 	w.WriteHeader(http.StatusOK)
+
+	fmt.Println("Initiating gossip to groupmates...")
+
+	connListToWrite := []string{} // get list of active groupmates
+	for _, user := range groupMates {
+		conn, ok := ActiveConns.Connections[user]
+		if ok {
+			connListToWrite = append(connListToWrite, conn)
+		}
+	}
+
+	if len(connListToWrite) == 0 {
+		fmt.Println("No clients active currently!")
+		return
+	}
+
+	rand.Seed(time.Now().UnixNano()) // choose a unique id from 1-100
+	randomNumber := rand.Intn(100) + 1
+
+	for _, elem := range connListToWrite {
+		fmt.Println(elem)
+	}
+
+	err = MulticastFromServer(connListToWrite, post, randomNumber) // multicast to at most 2 clients
+	if err != nil {                                                // if both secondary nodes are down
+		fmt.Println("Failed multicasting post to groupmates!")
+		return
+	}
+
+	fmt.Println("Multicasted post to secondary clients!")
+	return
 }
 
 func listenHTTP(dbClient *mongo.Client) {
@@ -250,7 +361,64 @@ func listenHTTP(dbClient *mongo.Client) {
 }
 
 func handleConnection(conn net.Conn) {
+	defer conn.Close()
 	fmt.Println("Received client connection from:", conn.RemoteAddr())
+
+	remoteAddr := conn.RemoteAddr()
+
+	tcpAddr, ok := remoteAddr.(*net.TCPAddr)
+	if !ok {
+		fmt.Println("Not a TCP connection")
+		return
+	}
+
+	hostname, err := net.LookupAddr(tcpAddr.IP.String())
+	if err != nil {
+		fmt.Printf("Error looking up hostname: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Remote hostname: %s\n", hostname[0]) // Note: hostname is returned as a slice, use [0] to get the first entry
+
+	username := ""
+	port := ""
+	for {
+		buffer := make([]byte, 1024)
+		n, err := conn.Read(buffer)
+		if err != nil {
+			fmt.Printf("Client %v disconnected\n", conn.RemoteAddr())
+			_, ok := ActiveConns.Connections[username]
+			if ok {
+				ActiveConns.Lock()
+				delete(ActiveConns.Connections, username) // remove client from conn list
+				ActiveConns.Unlock()
+			}
+			fmt.Println("Updated conn list:")
+			for key, value := range ActiveConns.Connections {
+				fmt.Printf("Key: %s, Value: %d\n", key, value)
+			}
+			return
+		}
+
+		// Unmarshal the JSON data into the AuthMessage struct
+		var authMsg types.AuthMessage
+		err = json.Unmarshal(buffer[:n], &authMsg)
+		if err != nil {
+			fmt.Println("Error unmarshalling JSON:", err)
+			return
+		}
+
+		fmt.Printf("Client %v sent: %s\n", conn.RemoteAddr(), authMsg)
+		username = authMsg.Username
+		port = authMsg.Port
+		ActiveConns.Lock()
+		ActiveConns.Connections[username] = hostname[0] + port // add client to conn list. store username, IP address
+		ActiveConns.Unlock()
+		fmt.Println("Updated conn list:")
+		for key, value := range ActiveConns.Connections {
+			fmt.Printf("Key: %s, Value: %d\n", key, value)
+		}
+	}
 }
 
 func initDB() (*mongo.Client, error) {
@@ -274,6 +442,10 @@ func initDB() (*mongo.Client, error) {
 }
 
 func main() {
+	ActiveConns = ClientMap{
+		Connections: make(map[string]string),
+	}
+
 	dbConn, err := initDB() // initialize MongoDB connection
 	if err != nil {
 		fmt.Printf("Error connecting to DB: %v\n", err)

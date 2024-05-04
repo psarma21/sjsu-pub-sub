@@ -6,32 +6,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
+	"sjsu-pub-sub/types"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
-type User struct {
-	Username string   `json:"username"`
-	Groups   []string `json:"groups"`
-}
-
-type Group struct {
-	GroupName  string   `bson:"groupname"`
-	Creator    string   `bson:"creator"`
-	GroupMates []string `bson:"groupmates"`
-	Posts      []Post   `bson:"posts"`
-}
-
-type Post struct {
-	Author string `bson:"author"`
-	Group  string `bson:"group"`
-	Body   string `bson:"body"`
-}
-
 const emptyStringError = "Enter a non-empty value!"
+
+type PostMap struct {
+	sync.RWMutex
+	posts map[int]int
+}
+
+var receivedPosts PostMap
 
 // getGroups() gets and prints all groups
 func getGroups(username string) error {
@@ -57,7 +50,7 @@ func getGroups(username string) error {
 		return fmt.Errorf("%s Error reading HTTP response: %v", errPrefix, err)
 	}
 
-	var groups []Group
+	var groups []types.Group
 	if err := json.Unmarshal(body, &groups); err != nil {
 		return fmt.Errorf("%s Error unmarshalling groups JSON: %v", errPrefix, err)
 	}
@@ -232,7 +225,7 @@ func login() (string, error) {
 }
 
 // dialAndAuthenticate() creates a long-lived TCP connection to receive new posts
-func dialAndAuthenticate(username string) (net.Conn, error) {
+func dialAndAuthenticate(username string, address string) (net.Conn, error) {
 	conn, err := net.Dial("tcp", "localhost:8081")
 	if err != nil {
 		return nil, err
@@ -240,24 +233,142 @@ func dialAndAuthenticate(username string) (net.Conn, error) {
 
 	fmt.Println("Connected to TCP server...")
 
-	_, err = conn.Write([]byte(username)) // send username so server can map client with username
+	msg := types.AuthMessage{
+		Username: username,
+		Port:     address,
+	}
+
+	bytes, err := json.Marshal(msg)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Println("Sent server username!")
+	_, err = conn.Write(bytes) // send username and port so server can map client with username
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Println("Sent server username and port!")
 	return conn, nil
 }
 
-func receiveNewPosts(conn net.Conn) {
-	data := make([]byte, 1024)
-	n, err := conn.Read(data)
+func pickRandomElements(input []string, count int) []string {
+	list := make([]string, len(input))
+	copy(list, input)
+
+	rand.Seed(time.Now().UnixNano())
+	rand.Shuffle(len(list), func(i, j int) {
+		list[i], list[j] = list[j], list[i]
+	})
+
+	if count > len(list) {
+		count = len(list)
+	}
+	return list[:count]
+}
+
+func checkServerHealth(conn net.Conn) {
+	for {
+		data := make([]byte, 1024)
+		_, err := conn.Read(data)
+		if err != nil {
+			fmt.Println("Error reading from server:", err)
+			conn.Close()
+			panic("Server closed connection")
+		}
+	}
+}
+
+func handleClientConnection(conn net.Conn) {
+	for {
+		data := make([]byte, 1024)
+		n, err := conn.Read(data)
+		if err != nil {
+			fmt.Println("Error reading from server:", err)
+			conn.Close()
+			return
+		}
+
+		data = data[:n]
+
+		var msg types.GossipMessage
+		err = json.Unmarshal([]byte(data), &msg)
+		if err != nil {
+			fmt.Println("Error unmarshalling data:", err)
+			return
+		}
+
+		msgCount, ok := receivedPosts.posts[msg.Id]
+		if ok { // seen post before
+			receivedPosts.posts[msg.Id] = msgCount + 1
+		} else { // new post
+			fmt.Println("Post received through gossip:", msg.Body)
+			receivedPosts.posts[msg.Id] = 1
+		}
+
+		if len(msg.ConnsToWrite) == 0 || receivedPosts.posts[msg.Id] >= 2 { // if no more connections to write or seen post at least twice
+			continue
+		}
+
+		connsToWrite := []string{}
+		if len(msg.ConnsToWrite) > 4 {
+			connsToWrite = pickRandomElements(msg.ConnsToWrite, 4) // pick 4 random clients to gossip to and delegate gossip to them
+		} else {
+			connsToWrite = msg.ConnsToWrite
+		}
+
+		for _, nextConn := range connsToWrite { // gossip to 4 other clients. ignore error
+			conn, err = net.Dial("tcp", nextConn)
+			if err != nil {
+				fmt.Println("Error dialing client", err)
+				continue
+			}
+
+			msgBytes, err := json.Marshal(msg)
+			if err != nil {
+				fmt.Println("Error marshaling message:", err)
+				continue
+			}
+
+			_, err = conn.Write(msgBytes)
+			if err != nil {
+				fmt.Println("Error sending message to a client:", err)
+				continue
+			}
+		}
+	}
+}
+
+func listenForOtherClientConnections(listener net.Listener) {
+	defer listener.Close()
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+
+		go handleClientConnection(conn)
+	}
+}
+
+func createListener() (n net.Listener, s string, err error) {
+	network := "tcp"
+	minPort := 5000
+	maxPort := 10000
+
+	// Generate a random port number within the specified range
+	rand.Seed(time.Now().UnixNano())
+	port := rand.Intn(maxPort-minPort+1) + minPort
+	address := fmt.Sprintf(":%d", port)
+
+	listener, err := net.Listen(network, address)
 	if err != nil {
-		fmt.Println("Error reading from server:", err)
-		return
+		fmt.Println("Client unable to start listener:", err)
+		return nil, "", err
 	}
 
-	fmt.Printf("Received data from TCP client: %s\n", data[:n])
+	return listener, address, nil
 }
 
 func main() {
@@ -267,13 +378,27 @@ func main() {
 		return
 	}
 
-	conn, err := dialAndAuthenticate(username) // dial to TCP server and send username
+	listener, address, err := createListener()
+	if err != nil {
+		fmt.Printf("Unable to create listener: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Client is listening on port %v\n", address)
+
+	go listenForOtherClientConnections(listener) // accept client connections and receive gossip
+
+	conn, err := dialAndAuthenticate(username, address) // dial to TCP server and send username
 	if err != nil {
 		fmt.Printf("Unable to connect to TCP server: %v\n", err)
 		return
 	}
 
-	go receiveNewPosts(conn) // receive and print new posts from server
+	receivedPosts = PostMap{
+		posts: make(map[int]int),
+	}
+
+	go checkServerHealth(conn) // client shutsdown if server shuts down
 
 	for {
 		err := doClientFunctionalities(username)
