@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
 	"sjsu-pub-sub/types"
+	"strconv"
 	"sync"
 	"time"
 
@@ -22,8 +24,10 @@ type ClientMap struct {
 	Connections map[string]string
 }
 
-// Global variable to store client connections
-var ActiveConns ClientMap
+var (
+	ActiveConns ClientMap     // global variable to store client connections
+	isLeader    chan struct{} // global channel to signal leadership status
+)
 
 func registerClientHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	body, err := ioutil.ReadAll(r.Body)
@@ -441,7 +445,52 @@ func initDB() (*mongo.Client, error) {
 	return client, nil
 }
 
+func listenForConnections(listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Printf("Error accepting connection: %v\n", err)
+			continue
+		}
+		go handleConnection(conn)
+	}
+}
+
+func handleLeaderMessage(conn net.Conn, myPort string) {
+	buffer := make([]byte, 1024)
+	n, err := conn.Read(buffer)
+	if err != nil {
+		return
+	}
+
+	receivedPort := string(buffer[:n])
+	fmt.Println("Received leader port number:", receivedPort)
+
+	if myPort == receivedPort {
+		isLeader <- struct{}{}
+	}
+}
+
+func listenForLeaderMessages(listener net.Listener, port string) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			continue
+		}
+		go handleLeaderMessage(conn, port)
+	}
+}
+
 func main() {
+	clientPort := flag.Int("port", 8081, "Port number for the server")
+	flag.Parse()
+	leaderPort := *clientPort + 1
+
+	stringClientPort := strconv.Itoa(*clientPort)
+	stringLeaderPort := strconv.Itoa(leaderPort)
+
+	isLeader = make(chan struct{})
+
 	ActiveConns = ClientMap{
 		Connections: make(map[string]string),
 	}
@@ -453,25 +502,33 @@ func main() {
 
 	fmt.Println("Initialized DB connection...")
 
-	go listenHTTP(dbConn) // listening for HTTP request
-
-	fmt.Println("HTTP server listening on port 8080...")
-
-	listener, err := net.Listen("tcp", ":8081") // listening for TCP connections for future gossip
+	listener, err := net.Listen("tcp", ":"+stringClientPort) // listening for TCP connections for future gossip
 	if err != nil {
 		fmt.Printf("Error listening: %v\n", err)
 		return
 	}
 	defer listener.Close()
 
-	fmt.Println("TCP server listening on port 8081...")
+	fmt.Printf("TCP server listening on port %s...\n", stringClientPort)
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			fmt.Printf("Error accepting connection: %v\n", err)
-			continue
-		}
-		go handleConnection(conn)
+	go listenForConnections(listener)
+
+	listener2, err := net.Listen("tcp", ":"+stringLeaderPort) // listening for TCP connections for future gossip
+	if err != nil {
+		fmt.Printf("Error listening: %v\n", err)
+		return
 	}
+	defer listener2.Close()
+
+	fmt.Printf("TCP server listening on port %s...\n", stringLeaderPort)
+
+	go listenForLeaderMessages(listener2, stringLeaderPort)
+
+	select {
+	case <-isLeader: // if leader, start HTTP server and take in requests
+		go listenHTTP(dbConn)
+		fmt.Println("HTTP server listening on port 8080...")
+	}
+
+	select {}
 }

@@ -225,31 +225,54 @@ func login() (string, error) {
 }
 
 // dialAndAuthenticate() creates a long-lived TCP connection to receive new posts
-func dialAndAuthenticate(username string, address string) (net.Conn, error) {
-	conn, err := net.Dial("tcp", "localhost:8081")
-	if err != nil {
-		return nil, err
-	}
-
-	fmt.Println("Connected to TCP server...")
-
+func dialAndAuthenticate(username string, address string) {
 	msg := types.AuthMessage{
 		Username: username,
 		Port:     address,
 	}
 
-	bytes, err := json.Marshal(msg)
+	bytes, _ := json.Marshal(msg)
+
+	server1 := "8081"
+	conn, err := net.Dial("tcp", "localhost:"+server1)
 	if err != nil {
-		return nil, err
+		fmt.Println("Unable to connect to TCP server", err)
+	} else {
+		fmt.Printf("Connected to TCP server %s...\n", "localhost:"+server1)
+
+		_, err = conn.Write(bytes) // send username and port so server can map client with username
+		if err != nil {
+			fmt.Println("Unable to write message", err)
+		}
 	}
 
-	_, err = conn.Write(bytes) // send username and port so server can map client with username
+	server2 := "8083"
+	conn, err = net.Dial("tcp", "localhost:"+server2)
 	if err != nil {
-		return nil, err
+		fmt.Println("Unable to connect to TCP server", err)
+	} else {
+		fmt.Printf("Connected to TCP server %s...\n", "localhost:"+server2)
+
+		_, err = conn.Write(bytes) // send username and port so server can map client with username
+		if err != nil {
+			fmt.Println("Unable to write message", err)
+		}
 	}
 
-	fmt.Println("Sent server username and port!")
-	return conn, nil
+	server3 := "8085"
+	conn, err = net.Dial("tcp", "localhost:"+server3)
+	if err != nil {
+		fmt.Println("Unable to connect to TCP server", err)
+	} else {
+		fmt.Printf("Connected to TCP server %s...\n", "localhost:"+server3)
+
+		_, err = conn.Write(bytes) // send username and port so server can map client with username
+		if err != nil {
+			fmt.Println("Unable to write message", err)
+		}
+	}
+
+	fmt.Println("Sent servers username and port!")
 }
 
 func pickRandomElements(input []string, count int) []string {
@@ -388,17 +411,11 @@ func main() {
 
 	go listenForOtherClientConnections(listener) // accept client connections and receive gossip
 
-	conn, err := dialAndAuthenticate(username, address) // dial to TCP server and send username
-	if err != nil {
-		fmt.Printf("Unable to connect to TCP server: %v\n", err)
-		return
-	}
+	dialAndAuthenticate(username, address) // dial to all TCP servers and send username
 
 	receivedPosts = PostMap{
 		posts: make(map[int]int),
 	}
-
-	go checkServerHealth(conn) // client shutsdown if server shuts down
 
 	for {
 		err := doClientFunctionalities(username)
