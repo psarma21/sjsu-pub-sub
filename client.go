@@ -30,7 +30,7 @@ var receivedPosts PostMap
 func getGroups(username string) error {
 	errPrefix := "Error getting groups:"
 
-	baseUrl := "http://localhost:8080/groups"
+	baseUrl := "http://34.125.114.92:8080/groups"
 
 	req, _ := http.NewRequest("GET", baseUrl, nil)
 
@@ -89,7 +89,7 @@ func joinGroup(username string) error {
 
 	payload := []byte(fmt.Sprintf("username=%s&groupname=%s", username, groupName))
 
-	url := "http://localhost:8080/joingroup"
+	url := "http://34.125.114.92:8080/joingroup"
 
 	resp, err := http.Post(url, "application/x-www-form-urlencoded", bytes.NewBuffer(payload))
 	if err != nil {
@@ -124,7 +124,7 @@ func writeMyPost(username string) error {
 
 	payload := []byte(fmt.Sprintf("username=%s&groupname=%s&post=%s", username, groupName, post))
 
-	url := "http://localhost:8080/writepost"
+	url := "http://34.125.114.92:8080/writepost"
 
 	resp, err := http.Post(url, "application/x-www-form-urlencoded", bytes.NewBuffer(payload))
 	if err != nil {
@@ -172,7 +172,7 @@ func doClientFunctionalities(username string) error {
 func tellServer(username string) error {
 	payload := strings.NewReader(username)
 
-	url := "http://localhost:8080/register"
+	url := "http://34.125.114.92:8080/register"
 
 	resp, err := http.Post(url, "text/plain", payload)
 	if err != nil {
@@ -234,11 +234,11 @@ func dialAndAuthenticate(username string, address string) {
 	bytes, _ := json.Marshal(msg)
 
 	server1 := "8081"
-	conn, err := net.Dial("tcp", "localhost:"+server1)
+	conn, err := net.Dial("tcp", "34.16.150.3:"+server1)
 	if err != nil {
 		fmt.Println("Unable to connect to TCP server", err)
 	} else {
-		fmt.Printf("Connected to TCP server %s...\n", "localhost:"+server1)
+		fmt.Printf("Connected to TCP server %s...\n", "34.16.150.3:"+server1)
 
 		_, err = conn.Write(bytes) // send username and port so server can map client with username
 		if err != nil {
@@ -246,31 +246,31 @@ func dialAndAuthenticate(username string, address string) {
 		}
 	}
 
-	server2 := "8083"
-	conn, err = net.Dial("tcp", "localhost:"+server2)
-	if err != nil {
-		fmt.Println("Unable to connect to TCP server", err)
-	} else {
-		fmt.Printf("Connected to TCP server %s...\n", "localhost:"+server2)
+	// server2 := "8083"
+	// conn, err = net.Dial("tcp", "34.125.114.92:"+server2)
+	// if err != nil {
+	// 	fmt.Println("Unable to connect to TCP server", err)
+	// } else {
+	// 	fmt.Printf("Connected to TCP server %s...\n", "34.125.114.92:"+server2)
 
-		_, err = conn.Write(bytes) // send username and port so server can map client with username
-		if err != nil {
-			fmt.Println("Unable to write message", err)
-		}
-	}
+	// 	_, err = conn.Write(bytes) // send username and port so server can map client with username
+	// 	if err != nil {
+	// 		fmt.Println("Unable to write message", err)
+	// 	}
+	// }
 
-	server3 := "8085"
-	conn, err = net.Dial("tcp", "localhost:"+server3)
-	if err != nil {
-		fmt.Println("Unable to connect to TCP server", err)
-	} else {
-		fmt.Printf("Connected to TCP server %s...\n", "localhost:"+server3)
+	// server3 := "8085"
+	// conn, err = net.Dial("tcp", "34.125.114.92:"+server3)
+	// if err != nil {
+	// 	fmt.Println("Unable to connect to TCP server", err)
+	// } else {
+	// 	fmt.Printf("Connected to TCP server %s...\n", "34.125.114.92:"+server3)
 
-		_, err = conn.Write(bytes) // send username and port so server can map client with username
-		if err != nil {
-			fmt.Println("Unable to write message", err)
-		}
-	}
+	// 	_, err = conn.Write(bytes) // send username and port so server can map client with username
+	// 	if err != nil {
+	// 		fmt.Println("Unable to write message", err)
+	// 	}
+	// }
 
 	fmt.Println("Sent servers username and port!")
 }

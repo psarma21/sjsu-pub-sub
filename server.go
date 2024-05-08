@@ -502,6 +502,13 @@ func main() {
 
 	fmt.Println("Initialized DB connection...")
 
+	conn, err := net.Dial("tcp", "34.125.114.92:8087")
+	// conn, err := net.Dial("tcp", "localhost:8087")
+	if err != nil {
+		fmt.Println("failed to connect to gateway")
+	}
+	defer conn.Close()
+
 	listener, err := net.Listen("tcp", ":"+stringClientPort) // listening for TCP connections for future gossip
 	if err != nil {
 		fmt.Printf("Error listening: %v\n", err)
@@ -509,7 +516,7 @@ func main() {
 	}
 	defer listener.Close()
 
-	fmt.Printf("TCP server listening on port %s...\n", stringClientPort)
+	fmt.Printf("TCP client erver listening on port %s...\n", stringClientPort)
 
 	go listenForConnections(listener)
 
@@ -520,14 +527,16 @@ func main() {
 	}
 	defer listener2.Close()
 
-	fmt.Printf("TCP server listening on port %s...\n", stringLeaderPort)
+	fmt.Printf("TCP leader server listening on port %s...\n", stringLeaderPort)
 
 	go listenForLeaderMessages(listener2, stringLeaderPort)
 
+	go listenHTTP(dbConn)
+
 	select {
 	case <-isLeader: // if leader, start HTTP server and take in requests
-		go listenHTTP(dbConn)
-		fmt.Println("HTTP server listening on port 8080...")
+		fmt.Println("Received leader election message!")
+		// fmt.Println("HTTP server listening on port 8080...")
 	}
 
 	select {}
