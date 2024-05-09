@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -13,48 +15,41 @@ import (
 )
 
 var (
-	activeNodes   []string   // List to store active nodes' hostnames
-	activeNodesMu sync.Mutex // Mutex to protect concurrent access to activeNodes
-	leaderNode    string     // Variable to store the leader node's hostname
-	leaderMu      sync.Mutex // Mutex to protect concurrent access to leaderNode
+	activeNodes   []string // List to store active nodes' hostnames
+	activeNodesMu sync.Mutex
+	leaderNode    string // Variable to store the leader node's hostname
+	leaderMu      sync.Mutex
 )
 
 func main() {
-	// Run leader election once at the beginning
-	runLeaderElection()
 
-	// Start listener to receive connections from servers
+	runLeaderElection() // run leader election once to start
 
-	go startServerListener()
+	go startServerListener() // detects new servers
 
-	go detectCrashedPort()
+	go detectCrashedPort() // detects crashed servers
 
 	router := mux.NewRouter()
 
-	// Register handler function for all routes
 	router.HandleFunc("/{service}", handleRequest)
 
-	// Start the gateway server
 	fmt.Println("Gateway server listening on port 8080...")
-	http.ListenAndServe(":8080", router)
+	http.ListenAndServe(":8080", router) // HTTP router
 
 	select {}
 }
 
 func runLeaderElection() {
-	// Run leader election once
 	leaderHostname := electLeader()
 	leaderMu.Lock()
 	leaderNode = leaderHostname
 	leaderMu.Unlock()
 
-	// Multicast leader election message to all servers
 	multicastLeader(leaderHostname)
 }
 
 func startServerListener() {
-	fmt.Println("came here")
-	listener, err := net.Listen("tcp", ":8087") // Listen for connections from servers
+	listener, err := net.Listen("tcp", ":8087") // listen for connections from servers
 	if err != nil {
 		fmt.Printf("Error listening for server connections: %v\n", err)
 		return
@@ -62,12 +57,12 @@ func startServerListener() {
 	defer listener.Close()
 
 	for {
-		conn, err := listener.Accept() // Accept incoming connections
+		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Printf("Error accepting connection from server: %v\n", err)
 			continue
 		}
-		fmt.Println("received connection", conn.RemoteAddr().String())
+		fmt.Println("Received connection:", conn.RemoteAddr().String())
 		handleServerConnection(conn)
 	}
 }
@@ -75,20 +70,19 @@ func startServerListener() {
 func handleServerConnection(conn net.Conn) {
 	defer conn.Close()
 
-	remoteAddr := conn.RemoteAddr().String() // Get the remote address (hostname + port)
-	ip, _, _ := net.SplitHostPort(remoteAddr)
-	fmt.Println(ip)
+	remoteAddr := conn.RemoteAddr().String() // get the remote address (hostname + port)
+	hostname, _, _ := net.SplitHostPort(remoteAddr)
 
 	activeNodesMu.Lock()
-	activeNodes = append(activeNodes, ip) // Add hostname to activeNodes list
+	activeNodes = append(activeNodes, hostname) // Add hostname to activeNodes list
 	activeNodesMu.Unlock()
 
-	runLeaderElection()
+	runLeaderElection() // run leader election after new node comes up
 
-	fmt.Println("active nodes", activeNodes)
+	fmt.Println("Active nodes:", activeNodes)
 }
 
-func detectCrashedPort() {
+func detectCrashedPort() { // check for crash every 5 seconds
 	for {
 		for _, hostname := range activeNodes {
 			_, err := net.DialTimeout("tcp", hostname+":8082", 1*time.Second) // check for crashed port by pinging them
@@ -96,15 +90,15 @@ func detectCrashedPort() {
 				activeNodesMu.Lock()
 				for i, node := range activeNodes {
 					if node == hostname {
-						activeNodes = append(activeNodes[:i], activeNodes[i+1:]...) // Remove the crashed node from activeNodes list
+						activeNodes = append(activeNodes[:i], activeNodes[i+1:]...) // remove the crashed node from activeNodes list
 						break
 					}
 				}
 				activeNodesMu.Unlock()
 
-				runLeaderElection()
+				runLeaderElection() // trigger leader election when a node goes down
 
-				fmt.Println("Server", hostname, "went down. Triggering leader election.")
+				fmt.Println("Server", hostname, "went down, triggering leader election...")
 			}
 		}
 
@@ -124,14 +118,14 @@ func electLeader() string {
 	var leaderHostname string
 	for _, hostname := range activeNodes {
 		if leaderHostname == "" || strings.Compare(hostname, leaderHostname) > 0 {
-			leaderHostname = hostname // Choose the node with the highest hostname as the leader
+			leaderHostname = hostname // choose the node with the highest hostname as the leader
 		}
 	}
 
 	return leaderHostname
 }
 
-func multicastLeader(leaderHostname string) {
+func multicastLeader(leaderHostname string) { // inform all servers who leader is
 	activeNodesMu.Lock()
 	defer activeNodesMu.Unlock()
 
@@ -149,57 +143,33 @@ func multicastLeader(leaderHostname string) {
 	}
 }
 
-// func handleRequest(w http.ResponseWriter, r *http.Request) {
-// 	leaderMu.Lock()
-// 	leaderHostname := leaderNode
-// 	leaderMu.Unlock()
-
-// 	if leaderHostname == "" {
-// 		http.Error(w, "Leader node is not available", http.StatusInternalServerError)
-// 		return
-// 	}
-
-// 	body, err := ioutil.ReadAll(r.Body)
-// 	if err != nil {
-// 		http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-// 		return
-// 	}
-
-// 	if err := forwardRequest(service, body, w, r); err != nil {
-// 		http.Error(w, err.Error(), http.StatusInternalServerError)
-// 		return
-// 	}
-
-// 	// Forward the HTTP request to the leader nod
-// 	http.Redirect(w, r, "http://"+leaderHostname+":8080"+r.RequestURI, http.StatusFound)
-
-// }
-
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	service := vars["service"]
 
-	// Forward the request to the appropriate server
-	if err := forwardRequest(service, w, r); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	for _, node := range activeNodes {
+		if node == leaderNode { // forward request to leader and write response to client
+			if err := forwardRequestAndListen(service, w, r); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else { // fire and forget to all other nodes (replication)
+			target := fmt.Sprintf("http://%s:8080/%s", node, service)
+			forwardRequestAndForget(target, w, r)
+		}
 	}
 }
 
-func forwardRequest(service string, w http.ResponseWriter, r *http.Request) error {
-	// Define the URL of the backend server based on the service
+func forwardRequestAndListen(service string, w http.ResponseWriter, r *http.Request) error {
 	backendURL := fmt.Sprintf("http://%s:8080/%s", leaderNode, service)
 
-	// Create a new request
 	req, err := http.NewRequest(r.Method, backendURL, r.Body)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
-	// Copy headers from the original request to the new request
 	req.Header = r.Header
 
-	// Send the request to the backend server
 	client := http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -207,21 +177,33 @@ func forwardRequest(service string, w http.ResponseWriter, r *http.Request) erro
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers from the backend server to the response writer
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
 
-	// Set response status code from the backend server
 	w.WriteHeader(resp.StatusCode)
 
-	// Copy response body from the backend server to the response writer
 	_, err = io.Copy(w, resp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to copy response body from backend server: %v", err)
 	}
 
 	return nil
+}
+
+func forwardRequestAndForget(targetURL string, w http.ResponseWriter, r *http.Request) {
+	target, err := url.Parse(targetURL)
+	if err != nil {
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	r.Host = target.Host
+
+	proxy.ServeHTTP(w, r)
+
+	return
 }

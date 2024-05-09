@@ -233,12 +233,12 @@ func dialAndAuthenticate(username string, address string) {
 
 	bytes, _ := json.Marshal(msg)
 
-	server1 := "8081"
-	conn, err := net.Dial("tcp", "34.16.150.3:"+server1)
+	server1 := "34.16.150.3:8081"
+	conn, err := net.Dial("tcp", server1)
 	if err != nil {
 		fmt.Println("Unable to connect to TCP server", err)
 	} else {
-		fmt.Printf("Connected to TCP server %s...\n", "34.16.150.3:"+server1)
+		fmt.Printf("Connected to TCP server %s...\n", server1)
 
 		_, err = conn.Write(bytes) // send username and port so server can map client with username
 		if err != nil {
@@ -246,12 +246,12 @@ func dialAndAuthenticate(username string, address string) {
 		}
 	}
 
-	// server2 := "8083"
-	// conn, err = net.Dial("tcp", "34.125.114.92:"+server2)
+	// server2 := "34.16.150.3:8081"
+	// conn, err = net.Dial("tcp", server2)
 	// if err != nil {
 	// 	fmt.Println("Unable to connect to TCP server", err)
 	// } else {
-	// 	fmt.Printf("Connected to TCP server %s...\n", "34.125.114.92:"+server2)
+	// 	fmt.Printf("Connected to TCP server %s...\n", server2)
 
 	// 	_, err = conn.Write(bytes) // send username and port so server can map client with username
 	// 	if err != nil {
@@ -259,12 +259,12 @@ func dialAndAuthenticate(username string, address string) {
 	// 	}
 	// }
 
-	// server3 := "8085"
-	// conn, err = net.Dial("tcp", "34.125.114.92:"+server3)
+	// server3 := "34.16.150.3:8081"
+	// conn, err = net.Dial("tcp", server3)
 	// if err != nil {
 	// 	fmt.Println("Unable to connect to TCP server", err)
 	// } else {
-	// 	fmt.Printf("Connected to TCP server %s...\n", "34.125.114.92:"+server3)
+	// 	fmt.Printf("Connected to TCP server %s...\n", server3)
 
 	// 	_, err = conn.Write(bytes) // send username and port so server can map client with username
 	// 	if err != nil {

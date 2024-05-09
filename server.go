@@ -22,12 +22,12 @@ import (
 
 type ClientMap struct {
 	sync.RWMutex
-	Connections map[string]string
+	Connections map[string]string // map of username (key) and IP (value)
 }
 
 var (
-	ActiveConns ClientMap     // global variable to store client connections
-	isLeader    chan struct{} // global channel to signal leadership status
+	ActiveConns  ClientMap // global variable to store client connections
+	isLeaderFlag bool      // whether server is leader or not
 )
 
 func registerClientHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
@@ -334,20 +334,23 @@ func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Cl
 		fmt.Println(elem)
 	}
 
-	err = MulticastFromServer(connListToWrite, post, randomNumber) // multicast to at most 2 clients
-	if err != nil {                                                // if both secondary nodes are down
-		fmt.Println("Failed multicasting post to groupmates!")
-		return
+	if isLeaderFlag { // only leaders should multicast
+		err = MulticastFromServer(connListToWrite, post, randomNumber) // multicast to at most 2 clients
+		if err != nil {                                                // if both secondary nodes are down
+			fmt.Println("Failed multicasting post to groupmates!")
+			return
+		}
+
+		fmt.Println("Multicasted post to secondary clients!")
+
 	}
 
-	fmt.Println("Multicasted post to secondary clients!")
 	return
 }
 
 func listenHTTP(dbClient *mongo.Client) {
 	mux := http.NewServeMux()
 
-	// Register handlers with the custom ServeMux
 	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) { // register a new user
 		registerClientHandler(w, r, dbClient)
 	})
@@ -361,7 +364,6 @@ func listenHTTP(dbClient *mongo.Client) {
 		writePostHandler(w, r, dbClient)
 	})
 
-	// Start the HTTP server with the custom ServeMux
 	http.ListenAndServe(":8080", mux)
 }
 
@@ -374,7 +376,6 @@ func handleConnection(conn net.Conn) {
 	parts := strings.SplitN(remoteAddr, ":", 2)
 	result := ""
 
-	// Extract the substring before the colon
 	if len(parts) > 0 {
 		result = parts[0]
 		fmt.Println("Substring before the first colon:", result)
@@ -382,7 +383,7 @@ func handleConnection(conn net.Conn) {
 		fmt.Println("No colon found in the string")
 	}
 
-	fmt.Printf("Remote hostname: %s\n", result) // Note: hostname is returned as a slice, use [0] to get the first entry
+	fmt.Printf("Remote hostname: %s\n", result)
 
 	username := ""
 	port := ""
@@ -404,7 +405,6 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 
-		// Unmarshal the JSON data into the AuthMessage struct
 		var authMsg types.AuthMessage
 		err = json.Unmarshal(buffer[:n], &authMsg)
 		if err != nil {
@@ -467,7 +467,7 @@ func handleLeaderMessage(conn net.Conn, myPort string) {
 	fmt.Println("Received leader port number:", receivedPort)
 
 	if myPort == receivedPort {
-		isLeader <- struct{}{}
+		isLeaderFlag = true
 	}
 }
 
@@ -485,11 +485,10 @@ func main() {
 	clientPort := flag.Int("port", 8081, "Port number for the server")
 	flag.Parse()
 	leaderPort := *clientPort + 1
+	isLeaderFlag = false
 
 	stringClientPort := strconv.Itoa(*clientPort)
 	stringLeaderPort := strconv.Itoa(leaderPort)
-
-	isLeader = make(chan struct{})
 
 	ActiveConns = ClientMap{
 		Connections: make(map[string]string),
@@ -502,25 +501,24 @@ func main() {
 
 	fmt.Println("Initialized DB connection...")
 
-	conn, err := net.Dial("tcp", "34.125.114.92:8087")
-	// conn, err := net.Dial("tcp", "localhost:8087")
+	conn, err := net.Dial("tcp", "34.125.114.92:8087") // connect to gateway
 	if err != nil {
 		fmt.Println("failed to connect to gateway")
 	}
 	defer conn.Close()
 
-	listener, err := net.Listen("tcp", ":"+stringClientPort) // listening for TCP connections for future gossip
+	listener, err := net.Listen("tcp", ":"+stringClientPort) // listen for TCP connections for future gossip from client
 	if err != nil {
 		fmt.Printf("Error listening: %v\n", err)
 		return
 	}
 	defer listener.Close()
 
-	fmt.Printf("TCP client erver listening on port %s...\n", stringClientPort)
+	fmt.Printf("TCP client server listening on port %s...\n", stringClientPort)
 
 	go listenForConnections(listener)
 
-	listener2, err := net.Listen("tcp", ":"+stringLeaderPort) // listening for TCP connections for future gossip
+	listener2, err := net.Listen("tcp", ":"+stringLeaderPort) // listen for leader election messages
 	if err != nil {
 		fmt.Printf("Error listening: %v\n", err)
 		return
@@ -532,12 +530,6 @@ func main() {
 	go listenForLeaderMessages(listener2, stringLeaderPort)
 
 	go listenHTTP(dbConn)
-
-	select {
-	case <-isLeader: // if leader, start HTTP server and take in requests
-		fmt.Println("Received leader election message!")
-		// fmt.Println("HTTP server listening on port 8080...")
-	}
 
 	select {}
 }
