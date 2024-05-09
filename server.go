@@ -28,6 +28,7 @@ type ClientMap struct {
 var (
 	ActiveConns  ClientMap // global variable to store client connections
 	isLeaderFlag bool      // whether server is leader or not
+	netConnList  []net.Conn
 )
 
 func registerClientHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
@@ -208,6 +209,11 @@ func MulticastFromServer(connList []string, post string, randomNumber int) error
 		conn0 := connList[0]
 		conn1 := connList[1]
 
+		// conn0Write := netConnList[0]
+		// fmt.Println(conn0Write.RemoteAddr().String())
+		// conn1Write := netConnList[1]
+		// fmt.Println(conn1Write.RemoteAddr().String())
+
 		excludedSelfConnList := connList[1:]
 
 		msg := types.GossipMessage{
@@ -334,16 +340,17 @@ func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Cl
 		fmt.Println(elem)
 	}
 
-	if isLeaderFlag { // only leaders should multicast
-		err = MulticastFromServer(connListToWrite, post, randomNumber) // multicast to at most 2 clients
-		if err != nil {                                                // if both secondary nodes are down
-			fmt.Println("Failed multicasting post to groupmates!")
-			return
-		}
-
-		fmt.Println("Multicasted post to secondary clients!")
-
+	// if isLeaderFlag { // only leaders should multicast
+	// fmt.Prin
+	err = MulticastFromServer(connListToWrite, post, randomNumber) // multicast to at most 2 clients
+	if err != nil {                                                // if both secondary nodes are down
+		fmt.Println("Failed multicasting post to groupmates!")
+		return
 	}
+
+	fmt.Println("Multicasted post to secondary clients!")
+
+	// }
 
 	return
 }
@@ -370,6 +377,8 @@ func listenHTTP(dbClient *mongo.Client) {
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	fmt.Println("Received client connection from:", conn.RemoteAddr())
+
+	netConnList = append(netConnList, conn)
 
 	remoteAddr := conn.RemoteAddr().String()
 
@@ -486,6 +495,8 @@ func main() {
 	flag.Parse()
 	leaderPort := *clientPort + 1
 	isLeaderFlag = false
+
+	netConnList = []net.Conn{}
 
 	stringClientPort := strconv.Itoa(*clientPort)
 	stringLeaderPort := strconv.Itoa(leaderPort)

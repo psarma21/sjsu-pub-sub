@@ -233,7 +233,7 @@ func dialAndAuthenticate(username string, address string) {
 
 	bytes, _ := json.Marshal(msg)
 
-	server1 := "34.16.150.3:8081"
+	server1 := "34.125.39.1:8081"
 	conn, err := net.Dial("tcp", server1)
 	if err != nil {
 		fmt.Println("Unable to connect to TCP server", err)
@@ -246,31 +246,31 @@ func dialAndAuthenticate(username string, address string) {
 		}
 	}
 
-	// server2 := "34.16.150.3:8081"
-	// conn, err = net.Dial("tcp", server2)
-	// if err != nil {
-	// 	fmt.Println("Unable to connect to TCP server", err)
-	// } else {
-	// 	fmt.Printf("Connected to TCP server %s...\n", server2)
+	server2 := "34.16.150.3:8081"
+	conn, err = net.Dial("tcp", server2)
+	if err != nil {
+		fmt.Println("Unable to connect to TCP server", err)
+	} else {
+		fmt.Printf("Connected to TCP server %s...\n", server2)
 
-	// 	_, err = conn.Write(bytes) // send username and port so server can map client with username
-	// 	if err != nil {
-	// 		fmt.Println("Unable to write message", err)
-	// 	}
-	// }
+		_, err = conn.Write(bytes) // send username and port so server can map client with username
+		if err != nil {
+			fmt.Println("Unable to write message", err)
+		}
+	}
 
-	// server3 := "34.16.150.3:8081"
-	// conn, err = net.Dial("tcp", server3)
-	// if err != nil {
-	// 	fmt.Println("Unable to connect to TCP server", err)
-	// } else {
-	// 	fmt.Printf("Connected to TCP server %s...\n", server3)
+	server3 := "34.125.18.161:8081"
+	conn, err = net.Dial("tcp", server3)
+	if err != nil {
+		fmt.Println("Unable to connect to TCP server", err)
+	} else {
+		fmt.Printf("Connected to TCP server %s...\n", server3)
 
-	// 	_, err = conn.Write(bytes) // send username and port so server can map client with username
-	// 	if err != nil {
-	// 		fmt.Println("Unable to write message", err)
-	// 	}
-	// }
+		_, err = conn.Write(bytes) // send username and port so server can map client with username
+		if err != nil {
+			fmt.Println("Unable to write message", err)
+		}
+	}
 
 	fmt.Println("Sent servers username and port!")
 }
@@ -341,7 +341,14 @@ func handleClientConnection(conn net.Conn) {
 		}
 
 		for _, nextConn := range connsToWrite { // gossip to 4 other clients. ignore error
-			
+
+			// index := strings.Index(nextConn, ":")
+			// if index == -1 {
+			// 	continue
+			// }
+			// port := nextConn[index+1:]
+			// newConn := "localhost:" + port
+
 			conn, err = net.Dial("tcp", nextConn)
 			if err != nil {
 				fmt.Println("Error dialing client", err)

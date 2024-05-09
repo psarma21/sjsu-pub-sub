@@ -45,6 +45,8 @@ func runLeaderElection() {
 	leaderNode = leaderHostname
 	leaderMu.Unlock()
 
+	fmt.Println("Elected leader as", leaderHostname)
+
 	multicastLeader(leaderHostname)
 }
 
@@ -150,12 +152,15 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	for _, node := range activeNodes {
 		if node == leaderNode { // forward request to leader and write response to client
 			if err := forwardRequestAndListen(service, w, r); err != nil {
+				fmt.Println("leader call")
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-		} else { // fire and forget to all other nodes (replication)
-			target := fmt.Sprintf("http://%s:8080/%s", node, service)
-			forwardRequestAndForget(target, w, r)
+			// } else { // fire and forget to all other nodes (replication)
+			// 	fmt.Println("secondary call")
+			// 	target := fmt.Sprintf("http://%s:8080/%s", node, service)
+			// 	forwardRequestAndForget(target, w, r)
+			// }
 		}
 	}
 }
