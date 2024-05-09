@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sjsu-pub-sub/types"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -368,21 +369,20 @@ func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	fmt.Println("Received client connection from:", conn.RemoteAddr())
 
-	remoteAddr := conn.RemoteAddr()
+	remoteAddr := conn.RemoteAddr().String()
 
-	tcpAddr, ok := remoteAddr.(*net.TCPAddr)
-	if !ok {
-		fmt.Println("Not a TCP connection")
-		return
+	parts := strings.SplitN(remoteAddr, ":", 2)
+	result := ""
+
+	// Extract the substring before the colon
+	if len(parts) > 0 {
+		result = parts[0]
+		fmt.Println("Substring before the first colon:", result)
+	} else {
+		fmt.Println("No colon found in the string")
 	}
 
-	hostname, err := net.LookupAddr(tcpAddr.IP.String())
-	if err != nil {
-		fmt.Printf("Error looking up hostname: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Remote hostname: %s\n", hostname[0]) // Note: hostname is returned as a slice, use [0] to get the first entry
+	fmt.Printf("Remote hostname: %s\n", result) // Note: hostname is returned as a slice, use [0] to get the first entry
 
 	username := ""
 	port := ""
@@ -416,7 +416,7 @@ func handleConnection(conn net.Conn) {
 		username = authMsg.Username
 		port = authMsg.Port
 		ActiveConns.Lock()
-		ActiveConns.Connections[username] = hostname[0] + port // add client to conn list. store username, IP address
+		ActiveConns.Connections[username] = result + port // add client to conn list. store username, IP address
 		ActiveConns.Unlock()
 		fmt.Println("Updated conn list:")
 		for key, value := range ActiveConns.Connections {
