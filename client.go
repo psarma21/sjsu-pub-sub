@@ -341,6 +341,7 @@ func handleClientConnection(conn net.Conn) {
 		}
 
 		for _, nextConn := range connsToWrite { // gossip to 4 other clients. ignore error
+			
 			conn, err = net.Dial("tcp", nextConn)
 			if err != nil {
 				fmt.Println("Error dialing client", err)

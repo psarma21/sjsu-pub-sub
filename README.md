@@ -3,10 +3,9 @@ Distributed publish-subscribe system
 
 by Riddhik Tilawat, Fahad Siddiqui, and Pawan Sarma
 
-## Testing locally
+## Our testing
 
-1. Setting up:
-- `go run mockserver.go` to start server
+We deployed our servers on Google Cloud Platform (GCP), so our current client, server, and gateway code have IPs hardcoded. To test 
 
 ## Testing with our deployed servers
 
