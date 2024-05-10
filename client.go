@@ -21,16 +21,16 @@ const emptyStringError = "Enter a non-empty value!"
 
 type PostMap struct {
 	sync.RWMutex
-	posts map[int]int
+	posts map[int]int // map of post id (key) and number of times post has been received (value)
 }
 
-var receivedPosts PostMap
+var receivedPosts PostMap // map of received posts from gossip
 
 // getGroups() gets and prints all groups
 func getGroups(username string) error {
 	errPrefix := "Error getting groups:"
 
-	baseUrl := "http://34.125.114.92:8080/groups"
+	baseUrl := "http://34.125.114.92:8080/groups" // HTTP request to gateway
 
 	req, _ := http.NewRequest("GET", baseUrl, nil)
 
@@ -55,7 +55,7 @@ func getGroups(username string) error {
 		return fmt.Errorf("%s Error unmarshalling groups JSON: %v", errPrefix, err)
 	}
 
-	fmt.Println("Groups:")
+	fmt.Println("Groups:") // print all received groups
 	for _, group := range groups {
 		fmt.Printf("Group Name: %s\n", group.GroupName)
 		fmt.Printf("Creator: %s\n", group.Creator)
@@ -89,7 +89,7 @@ func joinGroup(username string) error {
 
 	payload := []byte(fmt.Sprintf("username=%s&groupname=%s", username, groupName))
 
-	url := "http://34.125.114.92:8080/joingroup"
+	url := "http://34.125.114.92:8080/joingroup" // HTTP request to gateway
 
 	resp, err := http.Post(url, "application/x-www-form-urlencoded", bytes.NewBuffer(payload))
 	if err != nil {
@@ -124,7 +124,7 @@ func writeMyPost(username string) error {
 
 	payload := []byte(fmt.Sprintf("username=%s&groupname=%s&post=%s", username, groupName, post))
 
-	url := "http://34.125.114.92:8080/writepost"
+	url := "http://34.125.114.92:8080/writepost" // HTTP request to gateway
 
 	resp, err := http.Post(url, "application/x-www-form-urlencoded", bytes.NewBuffer(payload))
 	if err != nil {
@@ -168,11 +168,11 @@ func doClientFunctionalities(username string) error {
 	}
 }
 
-// tellServer() tells the server to register a new user
+// tellServer() tells the server to either register a new user or log in an existing user
 func tellServer(username string) error {
 	payload := strings.NewReader(username)
 
-	url := "http://34.125.114.92:8080/register"
+	url := "http://34.125.114.92:8080/register" // HTTP request to gateway
 
 	resp, err := http.Post(url, "text/plain", payload)
 	if err != nil {
@@ -210,8 +210,7 @@ func userLogin() (string, error) {
 
 // login() logs in a user
 func login() (string, error) {
-	// users enter username
-	username, err := userLogin()
+	username, err := userLogin() // users enter username
 	if err != nil {
 		return "", fmt.Errorf("Error getting new user login info: %v", err)
 	}
@@ -233,7 +232,9 @@ func dialAndAuthenticate(username string, address string) {
 
 	bytes, _ := json.Marshal(msg)
 
-	server1 := "34.125.39.1:8081"
+	// create TCP connection to 1) give server client IP for future gossip 2) create long-lived TCP connection
+
+	server1 := "34.125.39.1:8081" // server 1 IP
 	conn, err := net.Dial("tcp", server1)
 	if err != nil {
 		fmt.Println("Unable to connect to TCP server", err)
@@ -246,7 +247,7 @@ func dialAndAuthenticate(username string, address string) {
 		}
 	}
 
-	server2 := "34.16.150.3:8081"
+	server2 := "34.16.150.3:8081" // server 2 IP
 	conn, err = net.Dial("tcp", server2)
 	if err != nil {
 		fmt.Println("Unable to connect to TCP server", err)
@@ -259,7 +260,7 @@ func dialAndAuthenticate(username string, address string) {
 		}
 	}
 
-	server3 := "34.125.18.161:8081"
+	server3 := "34.125.18.161:8081" // server 3 IP
 	conn, err = net.Dial("tcp", server3)
 	if err != nil {
 		fmt.Println("Unable to connect to TCP server", err)
@@ -275,6 +276,7 @@ func dialAndAuthenticate(username string, address string) {
 	fmt.Println("Sent servers username and port!")
 }
 
+// pickRandomElements() returns count number of random elements of an input list
 func pickRandomElements(input []string, count int) []string {
 	list := make([]string, len(input))
 	copy(list, input)
@@ -295,13 +297,13 @@ func checkServerHealth(conn net.Conn) {
 		data := make([]byte, 1024)
 		_, err := conn.Read(data)
 		if err != nil {
-			fmt.Println("Error reading from server:", err)
+			fmt.Println("Error reading from server:", err) // log if server goes down
 			conn.Close()
-			panic("Server closed connection")
 		}
 	}
 }
 
+// handleClientConnection() receives gossip from a client and either terminate gossip or continues it
 func handleClientConnection(conn net.Conn) {
 	for {
 		data := make([]byte, 1024)
@@ -340,14 +342,7 @@ func handleClientConnection(conn net.Conn) {
 			connsToWrite = msg.ConnsToWrite
 		}
 
-		for _, nextConn := range connsToWrite { // gossip to 4 other clients. ignore error
-
-			// index := strings.Index(nextConn, ":")
-			// if index == -1 {
-			// 	continue
-			// }
-			// port := nextConn[index+1:]
-			// newConn := "localhost:" + port
+		for _, nextConn := range connsToWrite { // gossip to 4 other clients. ignore any errors
 
 			conn, err = net.Dial("tcp", nextConn)
 			if err != nil {
@@ -370,6 +365,7 @@ func handleClientConnection(conn net.Conn) {
 	}
 }
 
+// listenForOtherClientConnections() creates listener for clients to connect to it for gossip
 func listenForOtherClientConnections(listener net.Listener) {
 	defer listener.Close()
 	for {
@@ -383,6 +379,7 @@ func listenForOtherClientConnections(listener net.Listener) {
 	}
 }
 
+// createListener() creates TCP listener for server to connect for gossip
 func createListener() (n net.Listener, s string, err error) {
 	network := "tcp"
 	minPort := 5000
@@ -409,7 +406,7 @@ func main() {
 		return
 	}
 
-	listener, address, err := createListener()
+	listener, address, err := createListener() // TCP listener for server-client gossip
 	if err != nil {
 		fmt.Printf("Unable to create listener: %v\n", err)
 		return

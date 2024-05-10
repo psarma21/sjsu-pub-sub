@@ -31,14 +31,15 @@ func main() {
 
 	router := mux.NewRouter()
 
-	router.HandleFunc("/{service}", handleRequest)
+	router.HandleFunc("/{service}", handleRequest) // intialize router to route requests to leader
 
 	fmt.Println("Gateway server listening on port 8080...")
-	http.ListenAndServe(":8080", router) // HTTP router
+	http.ListenAndServe(":8080", router) // start HTTP router
 
 	select {}
 }
 
+// runLeaderElection() elects a leader and multicasts result to all active nodes
 func runLeaderElection() {
 	leaderHostname := electLeader()
 	leaderMu.Lock()
@@ -50,6 +51,7 @@ func runLeaderElection() {
 	multicastLeader(leaderHostname)
 }
 
+// startServerListener() creates listener for servers to inform their availability
 func startServerListener() {
 	listener, err := net.Listen("tcp", ":8087") // listen for connections from servers
 	if err != nil {
@@ -76,7 +78,7 @@ func handleServerConnection(conn net.Conn) {
 	hostname, _, _ := net.SplitHostPort(remoteAddr)
 
 	activeNodesMu.Lock()
-	activeNodes = append(activeNodes, hostname) // Add hostname to activeNodes list
+	activeNodes = append(activeNodes, hostname) // add hostname to activeNodes list
 	activeNodesMu.Unlock()
 
 	runLeaderElection() // run leader election after new node comes up
@@ -108,6 +110,7 @@ func detectCrashedPort() { // check for crash every 5 seconds
 	}
 }
 
+// electLeader() picks the active server with the lowest hostname
 func electLeader() string {
 	activeNodesMu.Lock()
 	defer activeNodesMu.Unlock()
@@ -120,14 +123,15 @@ func electLeader() string {
 	var leaderHostname string
 	for _, hostname := range activeNodes {
 		if leaderHostname == "" || strings.Compare(hostname, leaderHostname) > 0 {
-			leaderHostname = hostname // choose the node with the highest hostname as the leader
+			leaderHostname = hostname // choose the node with the lowest hostname as the leader
 		}
 	}
 
 	return leaderHostname
 }
 
-func multicastLeader(leaderHostname string) { // inform all servers who leader is
+// multicastLeader() informs all servers who leader is
+func multicastLeader(leaderHostname string) {
 	activeNodesMu.Lock()
 	defer activeNodesMu.Unlock()
 
@@ -145,6 +149,7 @@ func multicastLeader(leaderHostname string) { // inform all servers who leader i
 	}
 }
 
+// handleRequest() performs a RR to leader and FF to secondary servers
 func handleRequest(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	service := vars["service"]
@@ -152,15 +157,12 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	for _, node := range activeNodes {
 		if node == leaderNode { // forward request to leader and write response to client
 			if err := forwardRequestAndListen(service, w, r); err != nil {
-				fmt.Println("leader call")
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
+			} else { // fire and forget to all other nodes (replication)
+				target := fmt.Sprintf("http://%s:8080/%s", node, service)
+				forwardRequestAndForget(target, w, r)
 			}
-			// } else { // fire and forget to all other nodes (replication)
-			// 	fmt.Println("secondary call")
-			// 	target := fmt.Sprintf("http://%s:8080/%s", node, service)
-			// 	forwardRequestAndForget(target, w, r)
-			// }
 		}
 	}
 }

@@ -31,6 +31,7 @@ var (
 	netConnList  []net.Conn
 )
 
+// registerClientHandler() receives requests for new or existing users to log in
 func registerClientHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
@@ -70,6 +71,7 @@ func registerClientHandler(w http.ResponseWriter, r *http.Request, dbClient *mon
 	w.WriteHeader(http.StatusOK)
 }
 
+// getAllGroupsHandler() receives requests to return all groups
 func getAllGroupsHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	fmt.Printf("Retrieving all groups...\n")
 
@@ -113,6 +115,7 @@ func getAllGroupsHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo
 	fmt.Printf("Retrieved all groups!\n")
 }
 
+// joinGroupHandler() receives requests for a user to join a group, if it exists
 func joinGroupHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	err := r.ParseForm()
 	if err != nil {
@@ -178,7 +181,7 @@ func joinGroupHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Cl
 // MulticastFromServer starts the gossip from the server. The server will multicast to the first two clients, those two clients
 // will gossip with all other clients.
 func MulticastFromServer(connList []string, post string, randomNumber int) error {
-	if len(connList) <= 2 { // at most two clients, synchronously send. no error needed
+	if len(connList) <= 2 { // at most two clients, synchronously send to both
 		msg := types.GossipMessage{
 			Id:           randomNumber,
 			Body:         post,
@@ -205,14 +208,9 @@ func MulticastFromServer(connList []string, post string, randomNumber int) error
 		}
 
 		return nil
-	} else { // more than two clients, synchronously send to both but pass on all clients info
+	} else { // more than two clients, synchronously send to both but pass on all other clients info
 		conn0 := connList[0]
 		conn1 := connList[1]
-
-		// conn0Write := netConnList[0]
-		// fmt.Println(conn0Write.RemoteAddr().String())
-		// conn1Write := netConnList[1]
-		// fmt.Println(conn1Write.RemoteAddr().String())
 
 		excludedSelfConnList := connList[1:]
 
@@ -234,7 +232,7 @@ func MulticastFromServer(connList []string, post string, randomNumber int) error
 			return err
 		}
 
-		_, err = conn.Write(msgBytes)
+		_, err = conn.Write(msgBytes) // gossip to first client
 		if err != nil {
 			fmt.Println("Error sending message to a client:", err)
 			return err
@@ -260,7 +258,7 @@ func MulticastFromServer(connList []string, post string, randomNumber int) error
 			return err
 		}
 
-		_, err = conn.Write(msgBytes)
+		_, err = conn.Write(msgBytes) // gossip to second client
 		if err != nil {
 			fmt.Println("Error sending message to a client:", err)
 			return err
@@ -270,6 +268,7 @@ func MulticastFromServer(connList []string, post string, randomNumber int) error
 	return nil
 }
 
+// writePostHandler() receives requests for a user to write a post to a group, and if successful kickstarts gossip protocol
 func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Client) {
 	err := r.ParseForm()
 	if err != nil {
@@ -320,7 +319,7 @@ func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Cl
 
 	fmt.Println("Initiating gossip to groupmates...")
 
-	connListToWrite := []string{} // get list of active groupmates
+	connListToWrite := []string{} // get list of active groupmates of above group
 	for _, user := range groupMates {
 		conn, ok := ActiveConns.Connections[user]
 		if ok {
@@ -328,29 +327,27 @@ func writePostHandler(w http.ResponseWriter, r *http.Request, dbClient *mongo.Cl
 		}
 	}
 
-	if len(connListToWrite) == 0 {
+	if len(connListToWrite) == 0 { // terminate as no clients to gossip to
 		fmt.Println("No clients active currently!")
 		return
 	}
 
-	rand.Seed(time.Now().UnixNano()) // choose a unique id from 1-100
+	rand.Seed(time.Now().UnixNano()) // choose a unique post id from 1-100. This will be used by clients to see what gossip they're receiving
 	randomNumber := rand.Intn(100) + 1
 
 	for _, elem := range connListToWrite {
 		fmt.Println(elem)
 	}
 
-	// if isLeaderFlag { // only leaders should multicast
-	// fmt.Prin
-	err = MulticastFromServer(connListToWrite, post, randomNumber) // multicast to at most 2 clients
-	if err != nil {                                                // if both secondary nodes are down
-		fmt.Println("Failed multicasting post to groupmates!")
-		return
+	if isLeaderFlag { // only leaders can multicast
+		err = MulticastFromServer(connListToWrite, post, randomNumber) // multicast to at most 2 clients
+		if err != nil {                                                // if both secondary nodes are down, log error
+			fmt.Println("Failed multicasting post to groupmates!")
+			return
+		}
+
+		fmt.Println("Multicasted post to secondary clients!")
 	}
-
-	fmt.Println("Multicasted post to secondary clients!")
-
-	// }
 
 	return
 }
@@ -374,6 +371,7 @@ func listenHTTP(dbClient *mongo.Client) {
 	http.ListenAndServe(":8080", mux)
 }
 
+// handleConnection() receives TCP connections from clients and stores their IP address for future gossip
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	fmt.Println("Received client connection from:", conn.RemoteAddr())
@@ -386,7 +384,7 @@ func handleConnection(conn net.Conn) {
 	result := ""
 
 	if len(parts) > 0 {
-		result = parts[0]
+		result = parts[0] // get hostname (server) from IP. The port from conn.RemoteAddr() is not the TCP port the client is listening on for gossip
 		fmt.Println("Substring before the first colon:", result)
 	} else {
 		fmt.Println("No colon found in the string")
@@ -398,13 +396,13 @@ func handleConnection(conn net.Conn) {
 	port := ""
 	for {
 		buffer := make([]byte, 1024)
-		n, err := conn.Read(buffer)
+		n, err := conn.Read(buffer) // read port that client is listening to gossip on
 		if err != nil {
 			fmt.Printf("Client %v disconnected\n", conn.RemoteAddr())
 			_, ok := ActiveConns.Connections[username]
 			if ok {
 				ActiveConns.Lock()
-				delete(ActiveConns.Connections, username) // remove client from conn list
+				delete(ActiveConns.Connections, username) // if client goes down, remove client from conn list
 				ActiveConns.Unlock()
 			}
 			fmt.Println("Updated conn list:")
@@ -425,7 +423,7 @@ func handleConnection(conn net.Conn) {
 		username = authMsg.Username
 		port = authMsg.Port
 		ActiveConns.Lock()
-		ActiveConns.Connections[username] = result + port // add client to conn list. store username, IP address
+		ActiveConns.Connections[username] = result + port // store username as key, above hostname + receive port as IP (value) for client
 		ActiveConns.Unlock()
 		fmt.Println("Updated conn list:")
 		for key, value := range ActiveConns.Connections {
@@ -434,6 +432,7 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
+// initDB() makes a connection to local MongoDB instance
 func initDB() (*mongo.Client, error) {
 	var client *mongo.Client
 
@@ -454,6 +453,7 @@ func initDB() (*mongo.Client, error) {
 	return client, nil
 }
 
+// listenForConnections() listens for client connections and handles them
 func listenForConnections(listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
@@ -465,6 +465,7 @@ func listenForConnections(listener net.Listener) {
 	}
 }
 
+// handleLeaderMessage() receives who the elected leader is from gateway and checks if it is that node
 func handleLeaderMessage(conn net.Conn, myPort string) {
 	buffer := make([]byte, 1024)
 	n, err := conn.Read(buffer)
@@ -472,14 +473,15 @@ func handleLeaderMessage(conn net.Conn, myPort string) {
 		return
 	}
 
-	receivedPort := string(buffer[:n])
-	fmt.Println("Received leader port number:", receivedPort)
+	receivedServer := string(buffer[:n])
+	fmt.Println("Received leader hostname:", receivedServer)
 
-	if myPort == receivedPort {
-		isLeaderFlag = true
+	if myPort == receivedServer {
+		isLeaderFlag = true // if received server is itself, it is now leader
 	}
 }
 
+// listenForLeaderMessages() listens for leader election messages from gateway
 func listenForLeaderMessages(listener net.Listener, port string) {
 	for {
 		conn, err := listener.Accept()
@@ -498,8 +500,8 @@ func main() {
 
 	netConnList = []net.Conn{}
 
-	stringClientPort := strconv.Itoa(*clientPort)
-	stringLeaderPort := strconv.Itoa(leaderPort)
+	stringClientPort := strconv.Itoa(*clientPort) // client TCP server
+	stringLeaderPort := strconv.Itoa(leaderPort)  // leader election TCP server
 
 	ActiveConns = ClientMap{
 		Connections: make(map[string]string),
@@ -540,7 +542,7 @@ func main() {
 
 	go listenForLeaderMessages(listener2, stringLeaderPort)
 
-	go listenHTTP(dbConn)
+	go listenHTTP(dbConn) // start HTTP server
 
 	select {}
 }
